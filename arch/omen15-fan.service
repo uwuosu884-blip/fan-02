@@ -1,0 +1,16 @@
+[Unit]
+Description=omen15-fan EC-based fan curve for HP Omen 15-en1xxx (board 88D2)
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+ExecStartPre=-/sbin/modprobe ec_sys write_support=1
+ExecStart=/usr/bin/omen15-fan curve
+Restart=on-failure
+RestartSec=2
+ExecStopPost=-/usr/bin/omen15-fan auto
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

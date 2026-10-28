@@ -1,0 +1,37 @@
+# Maintainer: you
+pkgname=omen15-fan
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Direct EC fan control for HP Omen 15-en1xxx (board 88D2)"
+arch=('x86_64')
+url="https://example.invalid/omen15-fan"
+license=('GPL3')
+depends=('systemd')
+makedepends=('cargo')
+source=()
+sha256sums=()
+
+# Build from the local checkout this PKGBUILD lives in (../ relative to
+# arch/). If you move this into its own repo, replace `source=()` above with
+# a git/tarball source instead.
+pkgver() {
+  echo "$pkgver"
+}
+
+build() {
+  cd "$startdir/.."
+  export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 "$srcdir/target/release/omen15-fan" "$pkgdir/usr/bin/omen15-fan"
+  install -Dm644 "arch/omen15-fan.service" "$pkgdir/usr/lib/systemd/system/omen15-fan.service"
+  install -Dm644 "systemd/ec_sys.conf" "$pkgdir/usr/lib/modprobe.d/omen15-fan-ec_sys.conf"
+  install -Dm644 "systemd/ec_sys.modules-load.conf" "$pkgdir/usr/lib/modules-load.d/omen15-fan-ec_sys.conf"
+  install -Dm644 "config/config.toml" "$pkgdir/etc/omen15-fan/config.toml"
+  install -Dm644 "README.md" "$pkgdir/usr/share/doc/omen15-fan/README.md"
+  install -Dm644 "docs/CALIBRATION.md" "$pkgdir/usr/share/doc/omen15-fan/CALIBRATION.md"
+}

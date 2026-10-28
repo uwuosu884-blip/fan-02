@@ -1,0 +1,56 @@
+# omen15-fan configuration.
+# Installed by default at /etc/omen15-fan/config.toml.
+#
+# IMPORTANT: the register offsets below are the ones reported working for
+# HP Omen 15-en1xxx (DMI board 88D2) by third-party projects (pankha).
+# EC layouts have been observed to differ between firmware revisions of the
+# *same* board id, so confirm with `sudo omen15-fan probe --watch` before
+# trusting curve/set on your exact en1003ur unit. See docs/CALIBRATION.md.
+
+ec_path = "/sys/kernel/debug/ec/ec0/io"
+
+# hwmon chip to read CPU temperature from. "auto" prefers k10temp (your
+# Ryzen CPU), falling back to the first hwmon chip found.
+hwmon_chip = "auto"
+
+# Hard ceiling. omen15-fan will never command a speed above this, no
+# matter what the curve or a manual `set` call says.
+max_rpm = 5500
+# Floor speed while temperature is below the first curve point.
+idle_rpm = 2000
+
+poll_interval_ms = 2000
+# Fan speed is only allowed to step back down once the temperature has
+# dropped this many degrees below the level that produced the last step up.
+hysteresis_c = 3.0
+
+[registers]
+control = 0x15       # 0 = BIOS/auto, non-zero = manual
+fan1_target = 0x19   # write target, units of 100 RPM
+fan1_read = 0x11     # reported actual speed, units of 100 RPM
+# fan2_target = 0x1A  # uncomment + set if probe shows a second, independent
+# fan2_read = 0x12    # fan register on your machine
+
+[[curve]]
+temp_c = 40.0
+speed_percent = 0
+
+[[curve]]
+temp_c = 55.0
+speed_percent = 35
+
+[[curve]]
+temp_c = 65.0
+speed_percent = 55
+
+[[curve]]
+temp_c = 75.0
+speed_percent = 75
+
+[[curve]]
+temp_c = 85.0
+speed_percent = 90
+
+[[curve]]
+temp_c = 92.0
+speed_percent = 100

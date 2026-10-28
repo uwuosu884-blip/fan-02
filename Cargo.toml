@@ -1,0 +1,22 @@
+[package]
+name = "omen15-fan"
+version = "0.1.0"
+edition = "2021"
+description = "Custom EC-based fan control for HP Omen 15-en1xxx (board 88D2) on Linux"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "omen15-fan"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+libc = "0.2"
+ctrlc = "3"
+
+[profile.release]
+opt-level = 2
+lto = true
