@@ -78,6 +78,25 @@ enum Commands {
     },
     /// Write out the default config file (if one doesn't already exist).
     InitConfig,
+    /// Read one raw EC byte (hex or decimal offset). Low-level tool for
+    /// hunting down the right register on firmware the default map doesn't
+    /// match.
+    Peek {
+        /// Offset, e.g. 0x62 or 98.
+        offset: String,
+    },
+    /// Write one raw EC byte (hex or decimal offset/value). Low-level tool —
+    /// safe to experiment with (see docs/CALIBRATION.md), but you are
+    /// responsible for reverting with `panic-reset` or `auto` if unsure.
+    Poke {
+        offset: String,
+        value: String,
+    },
+    /// Emergency safety net: writes 0 to every control register this tool
+    /// knows about from any Omen EC scheme we've seen documented (not just
+    /// your configured one), to force the BIOS back in charge if something
+    /// seems stuck.
+    PanicReset,
 
     /// Install or remove the systemd service + ec_sys module configuration.
     Service {
@@ -102,6 +121,9 @@ fn main() -> Result<()> {
         Commands::Curve => cmd_curve(&cli),
         Commands::Calibrate { seconds, no_heat } => cmd_calibrate(&cli, *seconds, *no_heat),
         Commands::InitConfig => cmd_init_config(&cli),
+        Commands::Peek { offset } => cmd_peek(&cli, offset),
+        Commands::Poke { offset, value } => cmd_poke(&cli, offset, value),
+        Commands::PanicReset => cmd_panic_reset(&cli),
         Commands::Service { action } => cmd_service(action),
     }
 }
@@ -442,6 +464,67 @@ fn cmd_auto(cli: &Cli) -> Result<()> {
     ec.check_available()?;
     ec.write_byte(cfg.registers.control, 0)?;
     println!("control handed back to BIOS");
+    Ok(())
+}
+
+fn parse_u8(s: &str) -> Result<u8> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u8::from_str_radix(hex, 16).with_context(|| format!("parsing hex byte '{s}'"))
+    } else {
+        s.parse::<u8>()
+            .with_context(|| format!("parsing byte '{s}' (use e.g. 0x62 or 98)"))
+    }
+}
+
+fn cmd_peek(cli: &Cli, offset: &str) -> Result<()> {
+    dmi::ensure_root()?;
+    let cfg = load_config(cli)?;
+    let off = parse_u8(offset)?;
+    let ec = Ec::open(Some(&cfg.ec_path));
+    ec.check_available()?;
+    let v = ec.read_byte(off)?;
+    println!("0x{off:02X} = 0x{v:02X} ({v} decimal)");
+    Ok(())
+}
+
+fn cmd_poke(cli: &Cli, offset: &str, value: &str) -> Result<()> {
+    dmi::ensure_root()?;
+    let cfg = load_config(cli)?;
+    let dmi = DmiInfo::read()?;
+    dmi.require_known_board(cli.force)?;
+    let off = parse_u8(offset)?;
+    let val = parse_u8(value)?;
+    let ec = Ec::open(Some(&cfg.ec_path));
+    ec.check_available()?;
+    let before = ec.read_byte(off).unwrap_or(0);
+    ec.write_byte(off, val)?;
+    let after = ec.read_byte(off).unwrap_or(val);
+    println!("0x{off:02X}: 0x{before:02X} -> wrote 0x{val:02X}, now reads 0x{after:02X}");
+    Ok(())
+}
+
+/// Registers reported, across several independently-maintained Omen EC
+/// reverse-engineering projects, to be a "manual control enable" switch on
+/// some firmware. Used only to force everything back to BIOS/auto; this
+/// command never sets any of them to non-zero.
+const KNOWN_CONTROL_REGISTERS: &[u8] = &[0x15, 0x62];
+
+fn cmd_panic_reset(cli: &Cli) -> Result<()> {
+    dmi::ensure_root()?;
+    let cfg = load_config(cli)?;
+    let ec = Ec::open(Some(&cfg.ec_path));
+    ec.check_available()?;
+    for &reg in KNOWN_CONTROL_REGISTERS {
+        match ec.write_byte(reg, 0) {
+            Ok(()) => println!("wrote 0 to 0x{reg:02X}"),
+            Err(e) => println!("could not write 0x{reg:02X}: {e:#}"),
+        }
+    }
+    // Also clear the configured control register explicitly, in case it's
+    // something this tool doesn't otherwise know about.
+    let _ = ec.write_byte(cfg.registers.control, 0);
+    println!("done — BIOS should be back in charge of the fan(s).");
     Ok(())
 }
 
