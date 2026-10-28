@@ -1,5 +1,8 @@
 # omen15-fan
 
+**New here / not a Linux expert?** Skip straight to
+[INSTALL_SIMPLE.md](INSTALL_SIMPLE.md) — plain-language, copy-paste steps.
+
 Custom, from-scratch fan control for the **HP Omen 15-en1003ur** (DMI board
 **88D2**) on Arch Linux, written in Rust. Talks directly to the embedded
 controller (EC) via the kernel's `ec_sys` debugfs interface — no vendor
@@ -69,8 +72,9 @@ sudo systemctl enable --now omen15-fan.service
 
 ```
 omen15-fan status                 # board id, temps, current register values
+omen15-fan calibrate              # guided wizard: heats CPU, shows what changed, offers a live test
 omen15-fan probe                  # one-shot hex dump of all 256 EC bytes
-omen15-fan probe --watch          # live diff — calibration tool, see docs/CALIBRATION.md
+omen15-fan probe --watch          # live diff — manual calibration tool, see docs/CALIBRATION.md
 omen15-fan set --percent 60       # manual: 60% of max_rpm
 omen15-fan set --rpm 3200         # manual: fixed RPM, clamped to max_rpm
 omen15-fan auto                   # hand control back to the BIOS

@@ -62,8 +62,23 @@ enum Commands {
     /// Run the temperature-driven fan curve in the foreground (this is what
     /// the systemd service invokes).
     Curve,
+    /// Guided calibration wizard: heats the CPU briefly, watches which EC
+    /// bytes change, and (optionally, with your confirmation) runs a short
+    /// safe manual-speed test so you can confirm the register map actually
+    /// works on your machine. This is the easiest way to answer "will this
+    /// work on my exact laptop?".
+    Calibrate {
+        /// How long to run the built-in CPU heater for, in seconds.
+        #[arg(long, default_value_t = 20)]
+        seconds: u64,
+        /// Skip the heating step (only diff EC state at two points in time
+        /// you control manually, e.g. before/after a game).
+        #[arg(long)]
+        no_heat: bool,
+    },
     /// Write out the default config file (if one doesn't already exist).
     InitConfig,
+
     /// Install or remove the systemd service + ec_sys module configuration.
     Service {
         #[command(subcommand)]
@@ -85,6 +100,7 @@ fn main() -> Result<()> {
         Commands::Set { percent, rpm } => cmd_set(&cli, *percent, *rpm),
         Commands::Auto => cmd_auto(&cli),
         Commands::Curve => cmd_curve(&cli),
+        Commands::Calibrate { seconds, no_heat } => cmd_calibrate(&cli, *seconds, *no_heat),
         Commands::InitConfig => cmd_init_config(&cli),
         Commands::Service { action } => cmd_service(action),
     }
@@ -226,6 +242,166 @@ fn print_hex_grid(data: &[u8; ec::EC_SIZE]) {
         }
         println!();
     }
+}
+
+/// Interactive, mostly-automated calibration wizard. Answers "does the
+/// shipped 88D2 register map actually work on my exact machine?" without
+/// requiring the user to understand EC internals.
+fn cmd_calibrate(cli: &Cli, seconds: u64, no_heat: bool) -> Result<()> {
+    use std::io::{self, BufRead, Write as IoWrite};
+    use std::time::Instant;
+
+    dmi::ensure_root()?;
+    let cfg = load_config(cli)?;
+    let dmi = DmiInfo::read().unwrap_or_else(|_| dmi::DmiInfo {
+        board_name: "<unreadable>".into(),
+        product_name: "".into(),
+        sys_vendor: "".into(),
+    });
+    let ec = Ec::open(Some(&cfg.ec_path));
+    ec.check_available()?;
+
+    println!("=== omen15-fan calibration wizard ===");
+    println!(
+        "Board detected: {} (expected 88D2) — {}\n",
+        dmi.board_name,
+        if dmi.matches_expected() { "OK" } else { "DIFFERENT, be extra careful" }
+    );
+    println!(
+        "This will:\n\
+         1) take a snapshot of all EC registers,\n\
+         2) {} for {seconds}s so the stock BIOS fan curve ramps up on its own,\n\
+         3) take a second snapshot and show you exactly which bytes changed,\n\
+         4) optionally (only if you say yes) run a short, low, safe manual\n\
+            fan-speed test so we can see whether the shipped register map\n\
+            actually moves your fan.\n\
+         Nothing here can brick the laptop — worst case the fan runs at the\n\
+         wrong speed for a few seconds; `omen15-fan auto` or a reboot always\n\
+         puts the BIOS back in charge.\n",
+        if no_heat { "wait (you do the heating — e.g. run a game)" } else { "run a built-in CPU stress loop" }
+    );
+
+    let before = ec.read_all()?;
+
+    if no_heat {
+        println!("Do whatever makes the fan ramp up now (game, build, stress-ng...).");
+        println!("Press Enter here once it's ramped up.");
+        let mut line = String::new();
+        io::stdin().lock().read_line(&mut line)?;
+    } else {
+        let n = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        println!("Heating CPU with {n} busy threads for {seconds}s...");
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut handles = Vec::new();
+        for _ in 0..n {
+            let stop = stop.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut x: u64 = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    x = x.wrapping_mul(2654435761).wrapping_add(1);
+                    std::hint::black_box(x);
+                }
+            }));
+        }
+        let start = Instant::now();
+        while start.elapsed().as_secs() < seconds {
+            print!(".");
+            io::stdout().flush().ok();
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        stop.store(true, Ordering::Relaxed);
+        for h in handles {
+            let _ = h.join();
+        }
+        println!();
+    }
+
+    let after = ec.read_all()?;
+
+    let mut diffs: Vec<(usize, u8, u8)> = Vec::new();
+    for i in 0..ec::EC_SIZE {
+        if before[i] != after[i] {
+            diffs.push((i, before[i], after[i]));
+        }
+    }
+    diffs.sort_by_key(|(_, b, a)| std::cmp::Reverse((*a as i16 - *b as i16).unsigned_abs()));
+
+    println!("\n=== Registers that changed ({}) ===", diffs.len());
+    if diffs.is_empty() {
+        println!(
+            "Nothing changed. Either the fan didn't ramp up during the test\n\
+             (try a longer/heavier load), or this board reports fan state\n\
+             somewhere `probe --watch` would catch over a longer window."
+        );
+    }
+    for (off, b, a) in &diffs {
+        let mark_read = *off as u8 == cfg.registers.fan1_read;
+        let mark_ctrl = *off as u8 == cfg.registers.control;
+        let tag = if mark_read {
+            "  <-- matches configured fan1_read"
+        } else if mark_ctrl {
+            "  <-- matches configured control"
+        } else {
+            ""
+        };
+        println!("  0x{off:02X}: 0x{b:02X} -> 0x{a:02X}{tag}");
+    }
+
+    let configured_read_changed = diffs.iter().any(|(off, ..)| *off as u8 == cfg.registers.fan1_read);
+    println!();
+    if configured_read_changed {
+        println!(
+            "Good sign: the configured fan1_read register (0x{:02X}) changed during\n\
+             load, consistent with the shipped 88D2 map.",
+            cfg.registers.fan1_read
+        );
+    } else if !diffs.is_empty() {
+        println!(
+            "The configured fan1_read register (0x{:02X}) did NOT change, but other\n\
+             bytes did. The strongest candidate(s) above may be your real fan-speed\n\
+             register on this firmware — consider updating [registers] in\n\
+             {} accordingly, then re-run calibrate.",
+            cfg.registers.fan1_read, cli.config
+        );
+    }
+
+    println!("\n=== Optional: live manual-control test ===");
+    println!(
+        "This will set the fan to a modest ~{} RPM for 5 seconds using the\n\
+         CONFIGURED registers (control=0x{:02X}, target=0x{:02X}), then hand\n\
+         control back to the BIOS automatically. Proceed? [y/N]",
+        cfg.idle_rpm.max(2200),
+        cfg.registers.control,
+        cfg.registers.fan1_target
+    );
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+    if answer.trim().eq_ignore_ascii_case("y") {
+        dmi.require_known_board(cli.force)?;
+        let test_rpm = cfg.idle_rpm.max(2200).min(cfg.max_rpm);
+        let raw = cfg.rpm_to_raw(test_rpm);
+        ec.write_byte(cfg.registers.control, 1)?;
+        ec.write_byte(cfg.registers.fan1_target, raw)?;
+        println!("Set to ~{test_rpm} RPM, watching fan1_read for 5s:");
+        for _ in 0..5 {
+            std::thread::sleep(Duration::from_secs(1));
+            let read = ec.read_byte(cfg.registers.fan1_read)?;
+            println!("  fan1_read = 0x{:02X} (~{} RPM)", read, cfg.raw_to_rpm(read));
+        }
+        ec.write_byte(cfg.registers.control, 0)?;
+        println!("Done — control handed back to the BIOS.");
+        println!(
+            "If fan1_read climbed toward ~{test_rpm} RPM and you heard/felt the fan\n\
+             respond, the shipped register map works on your machine. If nothing\n\
+             happened, see docs/CALIBRATION.md and try the candidate offsets above."
+        );
+    } else {
+        println!("Skipped. Run `omen15-fan calibrate` again anytime, or test manually with `set`.");
+    }
+
+    Ok(())
 }
 
 fn cmd_set(cli: &Cli, percent: Option<u8>, rpm: Option<u32>) -> Result<()> {
