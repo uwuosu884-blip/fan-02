@@ -5,38 +5,67 @@ use std::path::Path;
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/omen15-fan/config.toml";
 
-/// EC register offsets for the fan control scheme. Defaults below come from
-/// the register map that other projects (e.g. `pankha`) have confirmed on
-/// board 88D2 (HP Omen 15-en1xxx). Different BIOS/EC firmware revisions of
-/// the *same* board id have been observed to use different offsets, so
-/// before relying on `curve`/`set`, run `omen15-fan probe --watch` and
-/// confirm these against your own machine.
+/// How a "read" register's raw byte should be interpreted for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadEncoding {
+    /// raw * 100 = RPM (confirmed convention for the *target* registers;
+    /// some boards' read-back registers mirror this too).
+    Rpm100,
+    /// Period-encoded tachometer (smaller value = faster fan). We don't yet
+    /// have a calibrated raw->RPM formula for this on your exact firmware,
+    /// so it's shown as a raw number, not a guessed RPM.
+    PeriodRaw,
+}
+
+/// EC register offsets for the fan control scheme.
+///
+/// The defaults below are the map **confirmed by live testing** on an HP
+/// Omen 15-en1003ur (board 88D2): `0x62`/`0x63`/`0x34`/`0x35` — this is the
+/// older, widely-used HP Omen EC layout (the same one the long-standing
+/// `omen-fan`/`hp-omen-linux-module` projects use), not the newer scheme
+/// `pankha` documents for 88D2 (`0x15`/`0x19`), which tested as inert on
+/// this unit. See docs/CALIBRATION.md for how this was found, and keep an
+/// eye out for other 88D2 firmware revisions needing yet another map.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterMap {
-    /// 0 = BIOS controls the fan automatically. Non-zero = manual control
-    /// using `fan1_target` (and `fan2_target` if set) below.
+    /// Manual-control switch register. Write `control_enable_value` to turn
+    /// manual mode on, `0` to hand back to the BIOS.
     pub control: u8,
-    /// Register the BIOS reads to know the fan's commanded speed, in units
-    /// of 100 RPM (0x1E == 3000 RPM).
+    /// The value that actually means "manual" for this firmware. Confirmed
+    /// as `6` on en1003ur (NOT `1` — that's what the newer pankha-style
+    /// scheme uses on other 88D2 firmware).
+    pub control_enable_value: u8,
+    /// Optional EC watchdog/countdown register. Some firmware automatically
+    /// hands control back to the BIOS once this counts down, unless the
+    /// host keeps resetting it to 0. omen15-fan does this automatically
+    /// every poll while a command is active. This is actually a *safety
+    /// feature*: if this tool crashes without cleaning up, the firmware
+    /// itself will revert to auto shortly after.
+    pub countdown: Option<u8>,
+    /// Write target for fan 1 (CPU), units of 100 RPM (0x1E == 3000 RPM).
     pub fan1_target: u8,
-    /// Register that reports the fan's actual current speed (same units).
+    /// Best-effort read-back register for fan 1's actual speed.
     pub fan1_read: u8,
-    /// Second fan (GPU fan), if your machine exposes one independently.
-    /// Leave as `None` until confirmed via `probe --watch`; until then both
-    /// fans are driven together through fan1_target, matching what pankha
-    /// documents for 88D2.
+    pub fan1_read_encoding: ReadEncoding,
+    /// Fan 2 (GPU), if your machine exposes/needs an independent register.
     pub fan2_target: Option<u8>,
     pub fan2_read: Option<u8>,
+    pub fan2_read_encoding: ReadEncoding,
 }
 
 impl Default for RegisterMap {
     fn default() -> Self {
         RegisterMap {
-            control: 0x15,
-            fan1_target: 0x19,
-            fan1_read: 0x11,
-            fan2_target: None,
-            fan2_read: None,
+            control: 0x62,
+            control_enable_value: 6,
+            countdown: Some(0x63),
+            fan1_target: 0x34,
+            fan1_read: 0x2E,
+            fan1_read_encoding: ReadEncoding::PeriodRaw,
+            fan2_target: Some(0x35),
+            fan2_read: Some(0x2F),
+            fan2_read_encoding: ReadEncoding::PeriodRaw,
         }
     }
 }
@@ -111,6 +140,9 @@ impl Config {
         if self.idle_rpm > self.max_rpm {
             anyhow::bail!("idle_rpm cannot be greater than max_rpm");
         }
+        if self.registers.control_enable_value == 0 {
+            anyhow::bail!("registers.control_enable_value must be non-zero (0 means auto/off)");
+        }
         let mut last_temp = f32::MIN;
         for p in &self.curve {
             if p.temp_c < last_temp {
@@ -141,5 +173,16 @@ impl Config {
 
     pub fn raw_to_rpm(&self, raw: u8) -> u32 {
         raw as u32 * 100
+    }
+
+    /// Human-readable rendering of a read-register's raw byte, respecting
+    /// its configured encoding.
+    pub fn format_read(&self, raw: u8, encoding: ReadEncoding) -> String {
+        match encoding {
+            ReadEncoding::Rpm100 => format!("~{} RPM", self.raw_to_rpm(raw)),
+            ReadEncoding::PeriodRaw => {
+                format!("raw period {raw} (lower = faster; not yet calibrated to RPM)")
+            }
+        }
     }
 }

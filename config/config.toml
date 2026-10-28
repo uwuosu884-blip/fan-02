@@ -1,11 +1,15 @@
 # omen15-fan configuration.
 # Installed by default at /etc/omen15-fan/config.toml.
 #
-# IMPORTANT: the register offsets below are the ones reported working for
-# HP Omen 15-en1xxx (DMI board 88D2) by third-party projects (pankha).
-# EC layouts have been observed to differ between firmware revisions of the
-# *same* board id, so confirm with `sudo omen15-fan probe --watch` before
-# trusting curve/set on your exact en1003ur unit. See docs/CALIBRATION.md.
+# This register map was CONFIRMED BY LIVE TESTING on an HP Omen 15-en1003ur
+# (board 88D2) on 2026-10-28: writing control_enable_value (6) to 0x62 and a
+# target value to 0x34/0x35 made the fans audibly respond. This is the
+# older, widely-used HP Omen EC layout (same family of registers as the
+# long-standing `omen-fan`/`hp-omen-linux-module` projects), not the newer
+# scheme `pankha` documents for 88D2 (0x15/0x19), which tested as INERT on
+# this exact unit. See docs/CALIBRATION.md for the full story — other 88D2
+# firmware revisions may still need a different map, always sanity check
+# with `omen15-fan calibrate` on a new machine before trusting `curve`.
 
 ec_path = "/sys/kernel/debug/ec/ec0/io"
 
@@ -25,11 +29,33 @@ poll_interval_ms = 2000
 hysteresis_c = 3.0
 
 [registers]
-control = 0x15       # 0 = BIOS/auto, non-zero = manual
-fan1_target = 0x19   # write target, units of 100 RPM
-fan1_read = 0x11     # reported actual speed, units of 100 RPM
-# fan2_target = 0x1A  # uncomment + set if probe shows a second, independent
-# fan2_read = 0x12    # fan register on your machine
+# 0 = BIOS/auto. Writing control_enable_value below switches to manual.
+control = 0x62
+control_enable_value = 6
+# EC watchdog: omen15-fan resets this to 0 every poll while it's driving
+# the fan. If this tool crashes without cleaning up, the firmware itself
+# hands control back to the BIOS once this counts down — a free safety net.
+countdown = 0x63
+
+fan1_target = 0x34   # CPU fan, write target, units of 100 RPM
+fan1_read = 0x2E      # best-effort telemetry; see fan1_read_encoding
+fan1_read_encoding = "period_raw"  # not yet calibrated to exact RPM, shown raw
+
+fan2_target = 0x35   # GPU fan
+fan2_read = 0x2F
+fan2_read_encoding = "period_raw"
+
+# --- Alternate map, reported (not confirmed on en1003ur) for OTHER 88D2
+# firmware revisions by the `pankha` project. Only switch to this if
+# `calibrate` shows the block above doing nothing on your machine:
+# control = 0x15
+# control_enable_value = 1
+# countdown = <none, remove the `countdown` line above>
+# fan1_target = 0x19
+# fan1_read = 0x11
+# fan1_read_encoding = "rpm100"
+# fan2_target = <none>
+# fan2_read = <none>
 
 [[curve]]
 temp_c = 40.0

@@ -1,5 +1,39 @@
 # Calibrating omen15-fan on your en1003ur
 
+## Status: resolved for this specific en1003ur unit (2026-10-28)
+
+Live testing found that this firmware uses the **older HP Omen EC layout**,
+not the pankha-documented one:
+
+- `0x15`/`0x19` (pankha's scheme): tested with `set --percent 50` and
+  `set --percent 100` — completely inert, no response at all. Safe, just
+  wrong for this firmware.
+- `0x62` (control, write `6` to enable) + `0x34`/`0x35` (fan 1 / fan 2
+  targets): **confirmed working** — writing to these made the fans ramp up
+  audibly within seconds.
+- `0x63` appears to be an EC watchdog/countdown register (the same role it
+  plays in several other Omen EC maps): the tool now resets it to 0 on every
+  poll while driving the fan, as a courtesy to the firmware — and as a nice
+  side effect, if this tool ever crashes without cleaning up, the firmware's
+  own watchdog should hand control back to the BIOS on its own.
+- `0x2E`/`0x2F` were observed, via `probe --watch`, oscillating in a tight,
+  fan-speed-like pattern during normal BIOS-driven operation (period-encoded
+  tachometer, not direct RPM) — used as best-effort telemetry, shown as a
+  raw number since the exact raw→RPM formula hasn't been calibrated yet.
+
+This is now the **default** register map in `config/config.toml`. The old
+pankha-style map is kept there, commented out, in case a future firmware
+update changes things again or someone with a different en1xxx unit needs
+it.
+
+**Caution for next time:** when testing a brand-new register on hardware,
+start with a small nudge from idle (e.g. +300 RPM), not an arbitrary round
+number like `40` — on this encoding, raw byte values are hundreds of RPM, so
+`40` meant a surprising jump to ~4000 RPM. `omen15-fan calibrate`'s built-in
+live test now always uses a gentle `idle_rpm + 300` value for exactly this
+reason.
+
+
 The register offsets shipped in `config/config.toml` (`control=0x15`,
 `fan1_target=0x19`, `fan1_read=0x11`) come from third-party projects (notably
 [pankha](https://github.com/VulnX/pankha)) that report them working on board

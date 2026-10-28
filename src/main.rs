@@ -173,40 +173,45 @@ fn cmd_status(cli: &Cli) -> Result<()> {
                 "  control[0x{:02X}] = 0x{:02X} ({})",
                 r.control,
                 control,
-                if control == 0 { "BIOS/auto" } else { "manual" }
+                if control == 0 { "BIOS/auto".to_string() } else { format!("manual (enable value: 0x{:02X})", r.control_enable_value) }
             );
+            if let Some(cd) = r.countdown {
+                let cdv = ec.read_byte(cd)?;
+                println!("  countdown[0x{cd:02X}] = 0x{cdv:02X}");
+            }
             println!(
-                "  fan1_target[0x{:02X}] = 0x{:02X}  (~{} RPM commanded)",
+                "  fan1_target[0x{:02X}] = 0x{:02X}  ({})",
                 r.fan1_target,
                 target,
-                cfg.raw_to_rpm(target)
+                cfg.format_read(target, config::ReadEncoding::Rpm100)
             );
             println!(
-                "  fan1_read[0x{:02X}]   = 0x{:02X}  (~{} RPM reported)",
+                "  fan1_read[0x{:02X}]   = 0x{:02X}  ({})",
                 r.fan1_read,
                 read1,
-                cfg.raw_to_rpm(read1)
+                cfg.format_read(read1, r.fan1_read_encoding)
             );
             if let (Some(t2), Some(r2)) = (r.fan2_target, r.fan2_read) {
                 let target2 = ec.read_byte(t2)?;
                 let read2 = ec.read_byte(r2)?;
                 println!(
-                    "  fan2_target[0x{:02X}] = 0x{:02X}  (~{} RPM commanded)",
+                    "  fan2_target[0x{:02X}] = 0x{:02X}  ({})",
                     t2,
                     target2,
-                    cfg.raw_to_rpm(target2)
+                    cfg.format_read(target2, config::ReadEncoding::Rpm100)
                 );
                 println!(
-                    "  fan2_read[0x{:02X}]   = 0x{:02X}  (~{} RPM reported)",
+                    "  fan2_read[0x{:02X}]   = 0x{:02X}  ({})",
                     r2,
                     read2,
-                    cfg.raw_to_rpm(read2)
+                    cfg.format_read(read2, r.fan2_read_encoding)
                 );
             }
         }
         Err(e) => println!("  {e:#}"),
     }
     Ok(())
+
 }
 
 fn cmd_probe(cli: &Cli, watch: bool, interval_ms: u64) -> Result<()> {
@@ -391,33 +396,43 @@ fn cmd_calibrate(cli: &Cli, seconds: u64, no_heat: bool) -> Result<()> {
 
     println!("\n=== Optional: live manual-control test ===");
     println!(
-        "This will set the fan to a modest ~{} RPM for 5 seconds using the\n\
-         CONFIGURED registers (control=0x{:02X}, target=0x{:02X}), then hand\n\
-         control back to the BIOS automatically. Proceed? [y/N]",
-        cfg.idle_rpm.max(2200),
+        "This will raise the fan gently from idle to ~{} RPM for 5 seconds using\n\
+         the CONFIGURED registers (control=0x{:02X}, enable value=0x{:02X},\n\
+         target=0x{:02X}), then hand control back to the BIOS automatically.\n\
+         Proceed? [y/N]",
+        cfg.idle_rpm + 300,
         cfg.registers.control,
+        cfg.registers.control_enable_value,
         cfg.registers.fan1_target
     );
     let mut answer = String::new();
     io::stdin().lock().read_line(&mut answer)?;
     if answer.trim().eq_ignore_ascii_case("y") {
         dmi.require_known_board(cli.force)?;
-        let test_rpm = cfg.idle_rpm.max(2200).min(cfg.max_rpm);
+        // Deliberately gentle: idle + a small bump, not a big jump — this is
+        // a first contact test, not a stress test.
+        let test_rpm = (cfg.idle_rpm + 300).min(cfg.max_rpm);
         let raw = cfg.rpm_to_raw(test_rpm);
-        ec.write_byte(cfg.registers.control, 1)?;
+        enable_manual(&ec, &cfg.registers)?;
         ec.write_byte(cfg.registers.fan1_target, raw)?;
+        if let Some(t2) = cfg.registers.fan2_target {
+            ec.write_byte(t2, raw)?;
+        }
         println!("Set to ~{test_rpm} RPM, watching fan1_read for 5s:");
         for _ in 0..5 {
             std::thread::sleep(Duration::from_secs(1));
             let read = ec.read_byte(cfg.registers.fan1_read)?;
-            println!("  fan1_read = 0x{:02X} (~{} RPM)", read, cfg.raw_to_rpm(read));
+            println!("  fan1_read = {}", cfg.format_read(read, cfg.registers.fan1_read_encoding));
+            if let Some(cd) = cfg.registers.countdown {
+                let _ = ec.write_byte(cd, 0); // keep the watchdog happy during the test
+            }
         }
-        ec.write_byte(cfg.registers.control, 0)?;
+        disable_manual(&ec, &cfg.registers)?;
         println!("Done — control handed back to the BIOS.");
         println!(
-            "If fan1_read climbed toward ~{test_rpm} RPM and you heard/felt the fan\n\
-             respond, the shipped register map works on your machine. If nothing\n\
-             happened, see docs/CALIBRATION.md and try the candidate offsets above."
+            "If you heard/felt the fan respond (even slightly), the shipped register\n\
+             map works on your machine. If nothing happened, see docs/CALIBRATION.md\n\
+             and try the candidate offsets above."
         );
     } else {
         println!("Skipped. Run `omen15-fan calibrate` again anytime, or test manually with `set`.");
@@ -444,7 +459,7 @@ fn cmd_set(cli: &Cli, percent: Option<u8>, rpm: Option<u32>) -> Result<()> {
     let ec = Ec::open(Some(&cfg.ec_path));
     ec.check_available()?;
     let r = &cfg.registers;
-    ec.write_byte(r.control, 1)?;
+    enable_manual(&ec, r)?;
     ec.write_byte(r.fan1_target, raw)?;
     if let Some(t2) = r.fan2_target {
         ec.write_byte(t2, raw)?;
@@ -462,7 +477,7 @@ fn cmd_auto(cli: &Cli) -> Result<()> {
     let cfg = load_config(cli)?;
     let ec = Ec::open(Some(&cfg.ec_path));
     ec.check_available()?;
-    ec.write_byte(cfg.registers.control, 0)?;
+    disable_manual(&ec, &cfg.registers)?;
     println!("control handed back to BIOS");
     Ok(())
 }
@@ -475,6 +490,33 @@ fn parse_u8(s: &str) -> Result<u8> {
         s.parse::<u8>()
             .with_context(|| format!("parsing byte '{s}' (use e.g. 0x62 or 98)"))
     }
+}
+
+/// Switches the EC to manual fan control using the configured register map:
+/// writes `control_enable_value` to `control`, and resets the watchdog
+/// `countdown` register (if configured) so the firmware doesn't immediately
+/// time out and hand control back to the BIOS.
+fn enable_manual(ec: &Ec, r: &config::RegisterMap) -> Result<()> {
+    ec.write_byte(r.control, r.control_enable_value)?;
+    if let Some(cd) = r.countdown {
+        ec.write_byte(cd, 0)?;
+    }
+    Ok(())
+}
+
+/// Hands control back to the BIOS: zeroes the control register *and* the
+/// fan target registers (some firmware needs both — matches the approach
+/// used by other long-standing Omen EC tools).
+fn disable_manual(ec: &Ec, r: &config::RegisterMap) -> Result<()> {
+    let _ = ec.write_byte(r.control, 0);
+    let _ = ec.write_byte(r.fan1_target, 0);
+    if let Some(t2) = r.fan2_target {
+        let _ = ec.write_byte(t2, 0);
+    }
+    if let Some(cd) = r.countdown {
+        let _ = ec.write_byte(cd, 0);
+    }
+    Ok(())
 }
 
 fn cmd_peek(cli: &Cli, offset: &str) -> Result<()> {
@@ -509,6 +551,13 @@ fn cmd_poke(cli: &Cli, offset: &str, value: &str) -> Result<()> {
 /// some firmware. Used only to force everything back to BIOS/auto; this
 /// command never sets any of them to non-zero.
 const KNOWN_CONTROL_REGISTERS: &[u8] = &[0x15, 0x62];
+/// Known fan *target* registers across the same set of projects. Zeroed
+/// alongside the control registers above so a leftover manual speed can't
+/// stick around even if the control bit alone isn't enough on some
+/// firmware.
+const KNOWN_FAN_TARGET_REGISTERS: &[u8] = &[0x19, 0x34, 0x35];
+/// Known EC watchdog/countdown registers.
+const KNOWN_COUNTDOWN_REGISTERS: &[u8] = &[0x63];
 
 fn cmd_panic_reset(cli: &Cli) -> Result<()> {
     dmi::ensure_root()?;
@@ -517,13 +566,22 @@ fn cmd_panic_reset(cli: &Cli) -> Result<()> {
     ec.check_available()?;
     for &reg in KNOWN_CONTROL_REGISTERS {
         match ec.write_byte(reg, 0) {
-            Ok(()) => println!("wrote 0 to 0x{reg:02X}"),
+            Ok(()) => println!("wrote 0 to control candidate 0x{reg:02X}"),
             Err(e) => println!("could not write 0x{reg:02X}: {e:#}"),
         }
     }
-    // Also clear the configured control register explicitly, in case it's
+    for &reg in KNOWN_FAN_TARGET_REGISTERS {
+        match ec.write_byte(reg, 0) {
+            Ok(()) => println!("wrote 0 to fan-target candidate 0x{reg:02X}"),
+            Err(e) => println!("could not write 0x{reg:02X}: {e:#}"),
+        }
+    }
+    for &reg in KNOWN_COUNTDOWN_REGISTERS {
+        let _ = ec.write_byte(reg, 0);
+    }
+    // Also clear whatever the active config points at, in case it's
     // something this tool doesn't otherwise know about.
-    let _ = ec.write_byte(cfg.registers.control, 0);
+    let _ = disable_manual(&ec, &cfg.registers);
     println!("done — BIOS should be back in charge of the fan(s).");
     Ok(())
 }
@@ -544,19 +602,18 @@ fn cmd_curve(cli: &Cli) -> Result<()> {
     {
         let running = running.clone();
         let ec_path = cfg.ec_path.clone();
-        let control_reg = cfg.registers.control;
+        let registers = cfg.registers.clone();
         ctrlc::set_handler(move || {
             running.store(false, Ordering::SeqCst);
             // Best-effort immediate revert; the main loop also does this on
             // the way out, this just covers a slow shutdown.
-            let _ = Ec::open(Some(&ec_path)).write_byte(control_reg, 0);
+            let _ = disable_manual(&Ec::open(Some(&ec_path)), &registers);
         })
         .context("setting signal handler")?;
     }
 
     let r = cfg.registers.clone();
-    ec.write_byte(r.control, 1)
-        .context("switching EC to manual control")?;
+    enable_manual(&ec, &r).context("switching EC to manual control")?;
     println!(
         "omen15-fan curve running (chip={}, poll={}ms, max_rpm={}, idle_rpm={}). Ctrl+C to stop and hand back to BIOS.",
         sensor.chip_name(),
@@ -569,6 +626,11 @@ fn cmd_curve(cli: &Cli) -> Result<()> {
     let mut last_rpm: Option<u32> = None;
 
     while running.load(Ordering::SeqCst) {
+        // Keep the EC's own watchdog happy every poll, independent of
+        // whether the target speed changed this iteration.
+        if let Some(cd) = r.countdown {
+            let _ = ec.write_byte(cd, 0);
+        }
         match sensor.read_max_c() {
             Ok(t) => {
                 if t > tracked_temp {
@@ -604,7 +666,7 @@ fn cmd_curve(cli: &Cli) -> Result<()> {
 
     // Normal exit path (running flag cleared without the process being
     // killed) — hand control back to the BIOS.
-    let _ = ec.write_byte(r.control, 0);
+    disable_manual(&ec, &r)?;
     println!("handed control back to BIOS, exiting");
     Ok(())
 }
