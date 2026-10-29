@@ -21,6 +21,10 @@ hwmon_chip = "auto"
 # matter what the curve or a manual `set` call says.
 max_rpm = 5500
 # Floor speed while temperature is below the first curve point.
+# Used ONLY when the curve resolves to 0% (temp below your first curve
+# point) — NOT a floor applied to other curve percentages, those are
+# followed exactly as configured, even if below idle_rpm. Set to 0 to let
+# the fan fully stop below that temperature.
 idle_rpm = 2000
 
 poll_interval_ms = 2000

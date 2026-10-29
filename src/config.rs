@@ -85,7 +85,11 @@ pub struct Config {
     /// Hard ceiling in RPM. omen15-fan will never command a speed above
     /// this value, regardless of the curve or manual `set` command.
     pub max_rpm: u32,
-    /// Minimum RPM floor used while in curve/auto mode (idle speed).
+    /// Speed used ONLY when the curve resolves to 0% (temperature below
+    /// your first curve point). This is NOT a floor applied to other curve
+    /// percentages — e.g. a "10%" point is followed exactly, even if the
+    /// resulting RPM is below this value. Set to 0 to let the fan fully
+    /// stop below that temperature.
     pub idle_rpm: u32,
     pub poll_interval_ms: u64,
     /// Avoid oscillating the fan for +/- this many degrees around a curve

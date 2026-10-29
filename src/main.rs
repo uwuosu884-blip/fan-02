@@ -666,10 +666,15 @@ fn cmd_curve(cli: &Cli) -> Result<()> {
                     tracked_temp = t;
                 }
                 let percent = curve::speed_percent_for_temp(&cfg.curve, tracked_temp);
+                // idle_rpm applies ONLY when the curve resolves to 0% (i.e.
+                // below your first curve point) — it is NOT a floor applied
+                // to other percentages. A curve point like "10%" is followed
+                // exactly (550 RPM on a 5500 max_rpm machine), even though
+                // that's below idle_rpm.
                 let target_rpm = if percent == 0 {
                     cfg.idle_rpm
                 } else {
-                    ((cfg.max_rpm as f32 * percent as f32 / 100.0) as u32).max(cfg.idle_rpm)
+                    (cfg.max_rpm as f32 * percent as f32 / 100.0).round() as u32
                 }
                 .min(cfg.max_rpm);
 

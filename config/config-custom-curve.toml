@@ -1,0 +1,63 @@
+# omen15-fan configuration — custom curve requested 2026-10-29.
+# This is the same confirmed register map as before (0x62/0x63/0x34/0x35),
+# just with your requested temperature -> fan speed curve.
+
+ec_path = "/sys/kernel/debug/ec/ec0/io"
+hwmon_chip = "auto"
+
+max_rpm = 5500
+# Used only when the curve resolves to 0% (below your first curve point,
+# 50C). 0 = fan fully stops below 50C, matching "50 degrees = 0%".
+idle_rpm = 0
+
+poll_interval_ms = 2000
+hysteresis_c = 3.0
+
+[registers]
+control = 0x62
+control_enable_value = 6
+countdown = 0x63
+
+fan1_target = 0x34   # CPU fan
+fan1_read = 0x2E
+fan1_read_encoding = "period_raw"
+
+fan2_target = 0x35   # GPU fan
+fan2_read = 0x2F
+fan2_read_encoding = "period_raw"
+
+[[curve]]
+temp_c = 50.0
+speed_percent = 0
+
+[[curve]]
+temp_c = 55.0
+speed_percent = 10
+
+[[curve]]
+temp_c = 60.0
+speed_percent = 15
+
+[[curve]]
+temp_c = 65.0
+speed_percent = 30
+
+[[curve]]
+temp_c = 70.0
+speed_percent = 63
+
+[[curve]]
+temp_c = 75.0
+speed_percent = 70
+
+[[curve]]
+temp_c = 80.0
+speed_percent = 75
+
+[[curve]]
+temp_c = 85.0
+speed_percent = 80
+
+[[curve]]
+temp_c = 90.0
+speed_percent = 100
