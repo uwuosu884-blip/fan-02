@@ -97,6 +97,12 @@ enum Commands {
     /// your configured one), to force the BIOS back in charge if something
     /// seems stuck.
     PanicReset,
+    /// One-off fix for "stopped responding after suspend/resume (lid close)":
+    /// reloads the ec_sys kernel module and restarts the omen15-fan service.
+    /// If you installed via `service install`, this now also happens
+    /// automatically on every resume — this command is for a manual nudge
+    /// or if you haven't reinstalled the service since upgrading.
+    ResumeFix,
 
     /// Install or remove the systemd service + ec_sys module configuration.
     Service {
@@ -124,6 +130,7 @@ fn main() -> Result<()> {
         Commands::Peek { offset } => cmd_peek(&cli, offset),
         Commands::Poke { offset, value } => cmd_poke(&cli, offset, value),
         Commands::PanicReset => cmd_panic_reset(&cli),
+        Commands::ResumeFix => cmd_resume_fix(),
         Commands::Service { action } => cmd_service(action),
     }
 }
@@ -586,6 +593,26 @@ fn cmd_panic_reset(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn cmd_resume_fix() -> Result<()> {
+    dmi::ensure_root()?;
+    println!("stopping omen15-fan.service...");
+    let _ = run(["systemctl", "stop", "omen15-fan.service"]);
+    std::thread::sleep(Duration::from_secs(1));
+    println!("reloading ec_sys...");
+    let _ = run(["modprobe", "-r", "ec_sys"]);
+    std::thread::sleep(Duration::from_secs(1));
+    run(["modprobe", "ec_sys", "write_support=1"])?;
+    std::thread::sleep(Duration::from_secs(1));
+    println!("restarting omen15-fan.service (if installed/enabled)...");
+    let _ = run(["systemctl", "start", "omen15-fan.service"]);
+    println!(
+        "done. Run `sudo omen15-fan status` to confirm the EC is responding again.\n\
+         Tip: run `sudo omen15-fan service install` to install a suspend/resume\n\
+         hook so this happens automatically from now on."
+    );
+    Ok(())
+}
+
 fn cmd_curve(cli: &Cli) -> Result<()> {
     dmi::ensure_root()?;
     let cfg = load_config(cli)?;
@@ -686,8 +713,11 @@ fn cmd_init_config(cli: &Cli) -> Result<()> {
 const SERVICE_UNIT: &str = include_str!("../systemd/omen15-fan.service");
 const MODPROBE_CONF: &str = include_str!("../systemd/ec_sys.conf");
 const MODULES_LOAD_CONF: &str = include_str!("../systemd/ec_sys.modules-load.conf");
+const SLEEP_HOOK: &str = include_str!("../systemd/omen15-fan-sleep.sh");
+const SLEEP_HOOK_PATH: &str = "/usr/lib/systemd/system-sleep/omen15-fan";
 
 fn cmd_service(action: &ServiceAction) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     dmi::ensure_root()?;
     match action {
         ServiceAction::Install => {
@@ -697,11 +727,14 @@ fn cmd_service(action: &ServiceAction) -> Result<()> {
                 MODULES_LOAD_CONF,
             )?;
             std::fs::write("/etc/systemd/system/omen15-fan.service", SERVICE_UNIT)?;
+            std::fs::write(SLEEP_HOOK_PATH, SLEEP_HOOK)?;
+            std::fs::set_permissions(SLEEP_HOOK_PATH, std::fs::Permissions::from_mode(0o755))?;
             Config::default().save(config::DEFAULT_CONFIG_PATH).ok();
             run(["systemctl", "daemon-reload"])?;
             run(["modprobe", "ec_sys", "write_support=1"])?;
             println!(
-                "installed. Review {} then run:\n  sudo systemctl enable --now omen15-fan.service",
+                "installed (including a suspend/resume hook at {}).\nReview {} then run:\n  sudo systemctl enable --now omen15-fan.service",
+                SLEEP_HOOK_PATH,
                 config::DEFAULT_CONFIG_PATH
             );
         }
@@ -710,12 +743,14 @@ fn cmd_service(action: &ServiceAction) -> Result<()> {
             let _ = std::fs::remove_file("/etc/systemd/system/omen15-fan.service");
             let _ = std::fs::remove_file("/etc/modprobe.d/omen15-fan-ec_sys.conf");
             let _ = std::fs::remove_file("/etc/modules-load.d/omen15-fan-ec_sys.conf");
+            let _ = std::fs::remove_file(SLEEP_HOOK_PATH);
             run(["systemctl", "daemon-reload"])?;
             println!("service removed (config and /opt left in place)");
         }
     }
     Ok(())
 }
+
 
 fn run<const N: usize>(args: [&str; N]) -> Result<()> {
     let status = std::process::Command::new(args[0])

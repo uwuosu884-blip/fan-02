@@ -80,8 +80,9 @@ omen15-fan set --rpm 3200         # manual: fixed RPM, clamped to max_rpm
 omen15-fan auto                   # hand control back to the BIOS
 omen15-fan curve                  # run the configured temp curve in the foreground
 omen15-fan init-config            # write the default config if missing
-omen15-fan service install        # install systemd unit + ec_sys module config
+omen15-fan service install        # install systemd unit + ec_sys module config + suspend/resume hook
 omen15-fan service uninstall      # remove them (config left in place)
+omen15-fan resume-fix             # manual one-off fix if things stop responding after lid close/open
 ```
 
 All commands accept `--config <path>` (default `/etc/omen15-fan/config.toml`)

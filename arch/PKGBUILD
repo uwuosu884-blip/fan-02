@@ -1,6 +1,6 @@
 # Maintainer: you
 pkgname=omen15-fan
-pkgver=0.1.0
+pkgver=1.3.0
 pkgrel=1
 pkgdesc="Direct EC fan control for HP Omen 15-en1xxx (board 88D2)"
 arch=('x86_64')
@@ -31,6 +31,7 @@ package() {
   install -Dm644 "arch/omen15-fan.service" "$pkgdir/usr/lib/systemd/system/omen15-fan.service"
   install -Dm644 "systemd/ec_sys.conf" "$pkgdir/usr/lib/modprobe.d/omen15-fan-ec_sys.conf"
   install -Dm644 "systemd/ec_sys.modules-load.conf" "$pkgdir/usr/lib/modules-load.d/omen15-fan-ec_sys.conf"
+  install -Dm755 "systemd/omen15-fan-sleep.sh" "$pkgdir/usr/lib/systemd/system-sleep/omen15-fan"
   install -Dm644 "config/config.toml" "$pkgdir/etc/omen15-fan/config.toml"
   install -Dm644 "README.md" "$pkgdir/usr/share/doc/omen15-fan/README.md"
   install -Dm644 "docs/CALIBRATION.md" "$pkgdir/usr/share/doc/omen15-fan/CALIBRATION.md"
