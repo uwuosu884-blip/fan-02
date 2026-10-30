@@ -32,6 +32,29 @@ poll_interval_ms = 2000
 # dropped this many degrees below the level that produced the last step up.
 hysteresis_c = 3.0
 
+# --- Rising-temperature delays (optional, new in 1.5.0) -------------------
+# By default the curve reacts to rising temperature immediately, which is
+# the safest behaviour. If you want short CPU bursts to NOT make the fan
+# audibly ramp, set a delay below.
+#
+# The temperature split point:
+rise_threshold_c = 70.0
+# Delay applied when rising temperatures are BELOW rise_threshold_c.
+# The new level must hold for this long before the fan speed increases.
+# 0 = react on the next poll (default). Example: 5000 = wait 5 seconds.
+rise_delay_below_ms = 0
+# Delay applied when rising temperatures are AT OR ABOVE rise_threshold_c.
+# Keep this small or 0 — this is where the heat actually matters.
+rise_delay_above_ms = 0
+#
+# Notes:
+#  * These only ever *delay speeding up*, never prevent it.
+#  * A "hold" doesn't restart on every new sample, so a slow steady climb
+#    still triggers once, exactly D ms after it was first noticed.
+#  * Slowing down is governed by hysteresis_c above, unaffected by these.
+#  * Requires poll_interval_ms < your delay, otherwise it can't be observed.
+# -------------------------------------------------------------------------
+
 [registers]
 # 0 = BIOS/auto. Writing control_enable_value below switches to manual.
 control = 0x62

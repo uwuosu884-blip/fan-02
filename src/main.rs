@@ -11,7 +11,7 @@ use dmi::DmiInfo;
 use ec::Ec;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(
@@ -648,9 +648,19 @@ fn cmd_curve(cli: &Cli) -> Result<()> {
         cfg.max_rpm,
         cfg.idle_rpm
     );
+    println!(
+        "  hysteresis={}C, rise delay: <{}C -> {}ms, >={}C -> {}ms",
+        cfg.hysteresis_c,
+        cfg.rise_threshold_c,
+        cfg.rise_delay_below_ms,
+        cfg.rise_threshold_c,
+        cfg.rise_delay_above_ms
+    );
 
     let mut tracked_temp = sensor.read_max_c().unwrap_or(0.0);
     let mut last_rpm: Option<u32> = None;
+    let mut rise = curve::RiseFilter::new();
+    let mut held_back = false;
 
     while running.load(Ordering::SeqCst) {
         // Keep the EC's own watchdog happy every poll, independent of
@@ -661,9 +671,41 @@ fn cmd_curve(cli: &Cli) -> Result<()> {
         match sensor.read_max_c() {
             Ok(t) => {
                 if t > tracked_temp {
-                    tracked_temp = t;
+                    // Rising: honour the configured debounce for this
+                    // temperature band before letting the fan speed up.
+                    if let Some(new_temp) = rise.update(
+                        tracked_temp,
+                        t,
+                        cfg.rise_threshold_c,
+                        cfg.rise_delay_below_ms,
+                        cfg.rise_delay_above_ms,
+                        Instant::now(),
+                    ) {
+                        tracked_temp = new_temp;
+                        if held_back {
+                            println!("rise confirmed ({t:.1}C) -> applying");
+                            held_back = false;
+                        }
+                    } else {
+                        let delay_ms = curve::rise_delay_ms_for(
+                            t,
+                            cfg.rise_threshold_c,
+                            cfg.rise_delay_below_ms,
+                            cfg.rise_delay_above_ms,
+                        );
+                        if delay_ms > 0 && !held_back {
+                            println!("rise to {t:.1}C held back ({delay_ms}ms delay)");
+                            held_back = true;
+                        }
+                    }
                 } else if tracked_temp - t >= cfg.hysteresis_c {
+                    // Falling past the hysteresis margin: instant, and any
+                    // in-flight rise is no longer relevant.
                     tracked_temp = t;
+                    rise.clear();
+                    held_back = false;
+                } else {
+                    rise.clear();
                 }
                 let percent = curve::speed_percent_for_temp(&cfg.curve, tracked_temp);
                 // idle_rpm applies ONLY when the curve resolves to 0% (i.e.

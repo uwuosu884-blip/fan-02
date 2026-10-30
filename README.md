@@ -24,6 +24,10 @@ software, no unsupported third-party kernel module required.
   `write_support=1`).
 - A configurable temperature → fan-speed curve with hysteresis, run as a
   systemd service.
+- Asymmetric response: `hysteresis_c` slows down-spooling, while
+  `rise_delay_below_ms` / `rise_delay_above_ms` (split at
+  `rise_threshold_c`) let you debounce *upward* fan ramps below and above a
+  chosen temperature, so short CPU bursts stay quiet.
 - Manual override (`set --percent`/`--rpm`), and a one-command way to hand
   control back to the BIOS (`auto`).
 - Hard RPM ceiling, board-id safety check (bypassable with `--force` only
@@ -84,6 +88,32 @@ omen15-fan service install        # install systemd unit + ec_sys module config 
 omen15-fan service uninstall      # remove them (config left in place)
 omen15-fan resume-fix             # manual one-off fix if things stop responding after lid close/open
 ```
+
+## Curve response timing
+
+Three independent knobs, all in `config.toml`:
+
+| Key | Direction | What it does |
+|---|---|---|
+| `hysteresis_c` (default `3.0`) | falling | Fan only steps **down** once the temp has dropped this far below the level that produced the last step up. |
+| `rise_delay_below_ms` (default `0`) | rising, below `rise_threshold_c` | A rise must hold this long before the fan speeds up. Ride out short bursts quietly. |
+| `rise_delay_above_ms` (default `0`) | rising, at/above `rise_threshold_c` | Same, for the hot range — keep it `0` or small. |
+
+`rise_threshold_c` (default `70.0`) is the split point between the two rise
+delays. `0` on either delay means "react on the next poll", i.e. the
+pre-1.5.0 always-instant behaviour, so existing configs keep working
+unchanged (the keys are optional).
+
+Details worth knowing:
+
+- Rise delays only ever *postpone speeding up*; they never stop it. If the
+  temperature stays up, the fan ramps exactly D ms after the rise was first
+  noticed — a slow steady climb does not keep resetting the timer.
+- Once the delay elapses, the fan jumps straight to the *current*
+  temperature's speed, not the temperature from D ms ago.
+- Falling behaviour is unaffected by the rise delays, and vice versa.
+- The delay has to be longer than `poll_interval_ms` to be observable, and
+  values over 5 minutes are rejected as a likely units mistake.
 
 All commands accept `--config <path>` (default `/etc/omen15-fan/config.toml`)
 and `--force` to bypass the board-id check.

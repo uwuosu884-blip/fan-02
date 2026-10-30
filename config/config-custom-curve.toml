@@ -11,7 +11,21 @@ max_rpm = 5500
 idle_rpm = 0
 
 poll_interval_ms = 2000
+# Fan only steps back DOWN once temp has fallen this far below the peak.
 hysteresis_c = 3.0
+
+# --- Rising-temperature delays (new in 1.5.0) -----------------------------
+# These only ever DELAY speeding up. Falling temps are unaffected (that's
+# hysteresis_c above).
+#
+# Split point between the two delays below:
+rise_threshold_c = 70.0
+# Below 70C: wait this long before speeding up, so brief bursts stay quiet.
+# 0 = react instantly. Set to 0 if you want the old always-instant behaviour.
+rise_delay_below_ms = 3000
+# At/above 70C: respond promptly (this is the range where heat matters).
+rise_delay_above_ms = 0
+# -------------------------------------------------------------------------
 
 [registers]
 control = 0x62

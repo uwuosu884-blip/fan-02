@@ -5,6 +5,12 @@ use std::path::Path;
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/omen15-fan/config.toml";
 
+/// Default temperature that splits `rise_delay_below_ms` from
+/// `rise_delay_above_ms`.
+fn default_rise_threshold_c() -> f32 {
+    70.0
+}
+
 /// How a "read" register's raw byte should be interpreted for display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,8 +99,27 @@ pub struct Config {
     pub idle_rpm: u32,
     pub poll_interval_ms: u64,
     /// Avoid oscillating the fan for +/- this many degrees around a curve
-    /// breakpoint.
+    /// breakpoint. Only ever delays DOWNWARD moves — a rising temperature is
+    /// always allowed to raise the fan speed (subject to the
+    /// `rise_delay_*_ms` debounce below).
     pub hysteresis_c: f32,
+    /// Temperature that splits the two rising-response delays below. When the
+    /// temperature is rising and is BELOW this value, `rise_delay_below_ms`
+    /// applies; at or ABOVE it, `rise_delay_above_ms` applies.
+    #[serde(default = "default_rise_threshold_c")]
+    pub rise_threshold_c: f32,
+    /// How long a rising temperature must *stay* at its new level before the
+    /// fan is allowed to speed up, for temperatures below
+    /// `rise_threshold_c`. `0` = react on the very next poll (pre-1.5.0
+    /// behaviour). Useful to ride out short CPU bursts without the fan
+    /// audibly ramping.
+    #[serde(default)]
+    pub rise_delay_below_ms: u64,
+    /// Same as `rise_delay_below_ms`, but for temperatures at or above
+    /// `rise_threshold_c`. Keep this short (usually `0`) — this is where
+    /// heat actually matters and you want the fan to respond promptly.
+    #[serde(default)]
+    pub rise_delay_above_ms: u64,
     pub curve: Vec<CurvePoint>,
     /// hwmon chip name to source CPU temperature from. `k10temp` is correct
     /// for your Ryzen CPU; `auto` tries to find it automatically.
@@ -110,6 +135,9 @@ impl Default for Config {
             idle_rpm: 2000,
             poll_interval_ms: 2000,
             hysteresis_c: 3.0,
+            rise_threshold_c: default_rise_threshold_c(),
+            rise_delay_below_ms: 0,
+            rise_delay_above_ms: 0,
             hwmon_chip: "auto".to_string(),
             curve: vec![
                 CurvePoint { temp_c: 40.0, speed_percent: 0 },   // idle_rpm applies below this
@@ -143,6 +171,19 @@ impl Config {
         }
         if self.idle_rpm > self.max_rpm {
             anyhow::bail!("idle_rpm cannot be greater than max_rpm");
+        }
+        if self.hysteresis_c < 0.0 {
+            anyhow::bail!("hysteresis_c cannot be negative");
+        }
+        for (name, ms) in [
+            ("rise_delay_below_ms", self.rise_delay_below_ms),
+            ("rise_delay_above_ms", self.rise_delay_above_ms),
+        ] {
+            // Nearly always a units mistake: someone wrote seconds, or a
+            // stray extra digit. Refuse rather than silently under-cool.
+            if ms > 300_000 {
+                anyhow::bail!("{name} = {ms} ms is more than 5 minutes — did you mean to write milliseconds?");
+            }
         }
         if self.registers.control_enable_value == 0 {
             anyhow::bail!("registers.control_enable_value must be non-zero (0 means auto/off)");

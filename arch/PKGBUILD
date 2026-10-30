@@ -1,6 +1,6 @@
 # Maintainer: you
 pkgname=omen15-fan
-pkgver=1.4.0
+pkgver=1.5.0
 pkgrel=1
 pkgdesc="Direct EC fan control for HP Omen 15-en1xxx (board 88D2)"
 arch=('x86_64')
